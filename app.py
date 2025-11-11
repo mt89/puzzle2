@@ -29,12 +29,12 @@ if sys.platform.startswith("win"):
     import ctypes  # wird nur unter Windows importiert
 
 APP_TITLE = "Jigsaw Controller - Expertenpuzzle"
-BASE_FONT = ("Segoe UI", 13)
-TITLE_FONT = ("Segoe UI", 20, "bold")
-TIMER_FONT = ("Segoe UI", 40, "bold")
-CARD_TITLE_FONT = ("Segoe UI", 22, "bold")
-CARD_ITEM_FONT = ("Segoe UI", 20)
-CARD_HINT_FONT = ("Segoe UI", 18)
+BASE_FONT = ("Segoe UI", 12)
+TITLE_FONT = ("Segoe UI", 18, "bold")
+TIMER_FONT = ("Segoe UI", 34, "bold")
+CARD_TITLE_FONT = ("Segoe UI", 18, "bold")
+CARD_ITEM_FONT = ("Segoe UI", 16)
+CARD_HINT_FONT = ("Segoe UI", 15)
 
 LIGHT_BACKGROUND = "#F4F6FB"
 CARD_BACKGROUND = "#FFFFFF"
@@ -587,11 +587,14 @@ class SimpleGroupsWindow(tk.Toplevel):
             pass
         self.focus_set()
 
-        self.font_header = tkfont.Font(family="Segoe UI", size=34, weight="bold")
-        self.font_meta = tkfont.Font(family="Segoe UI", size=20)
-        self.font_group_title = tkfont.Font(family="Segoe UI", size=28, weight="bold")
-        self.font_member = tkfont.Font(family="Segoe UI", size=24)
-        self.font_hint = tkfont.Font(family="Segoe UI", size=22)
+        self.font_header = tkfont.Font(family="Segoe UI", size=30, weight="bold")
+        self.font_meta = tkfont.Font(family="Segoe UI", size=18)
+        self.font_group_title = tkfont.Font(family="Segoe UI", size=24, weight="bold")
+        self.font_member = tkfont.Font(family="Segoe UI", size=20)
+        self.font_hint = tkfont.Font(family="Segoe UI", size=18)
+        self._fullscreen = False
+        self._cards: List[Dict[str, Any]] = []
+        self._resize_job: Optional[str] = None
 
         self.container = ttk.Frame(self, padding=24, style="AppBackground.TFrame")
         self.container.pack(fill="both", expand=True)
@@ -619,16 +622,27 @@ class SimpleGroupsWindow(tk.Toplevel):
         self._render_groups()
         self.bind("<Configure>", self._on_resize)
         self.after(0, self._update_font_sizes)
+        self.after(100, self._maximize)
+        self.bind("<Escape>", self._close_display)
+        self.protocol("WM_DELETE_WINDOW", self._close_display)
 
     def _render_groups(self) -> None:
         for child in self.groups_frame.winfo_children():
             child.destroy()
+        if self._resize_job is not None:
+            try:
+                self.after_cancel(self._resize_job)
+            except Exception:
+                pass
+            self._resize_job = None
+        self._cards.clear()
         if not self.groups:
-            ttk.Label(
+            tk.Label(
                 self.groups_frame,
                 text="Keine Lernenden vorhanden.",
                 font=self.font_hint,
-                foreground="#6B7280",
+                fg="#6B7280",
+                bg=LIGHT_BACKGROUND,
             ).pack(expand=True)
             return
 
@@ -649,17 +663,42 @@ class SimpleGroupsWindow(tk.Toplevel):
             self.groups_frame.rowconfigure(row, weight=1)
             card = ttk.Frame(self.groups_frame, style="CardBody.TFrame", padding=20)
             card.grid(row=row, column=col, padx=14, pady=14, sticky="nsew")
-            ttk.Label(card, text=f"Gruppe {i}", font=self.font_group_title).pack(anchor="w", pady=(0, 8))
+            title_label = tk.Label(
+                card,
+                text=f"Gruppe {i}",
+                anchor="w",
+                justify=tk.LEFT,
+                bg=CARD_BACKGROUND,
+                fg="#1B1C1E",
+            )
+            title_label.pack(anchor="w", pady=(0, 8), fill="x")
+            member_labels: List[tk.Label] = []
+            hint_labels: List[tk.Label] = []
             if group:
                 for name in group:
-                    ttk.Label(card, text=name, font=self.font_member).pack(anchor="w", padx=6, pady=2)
+                    lbl = tk.Label(
+                        card,
+                        text=f"• {name}",
+                        anchor="w",
+                        justify=tk.LEFT,
+                        bg=CARD_BACKGROUND,
+                        fg="#1B1C1E",
+                    )
+                    lbl.pack(anchor="w", padx=6, pady=2, fill="x")
+                    member_labels.append(lbl)
             else:
-                ttk.Label(
+                lbl = tk.Label(
                     card,
                     text="(leer)",
-                    font=self.font_hint,
-                    foreground="#6B7280",
-                ).pack(anchor="w", padx=6, pady=2)
+                    anchor="w",
+                    justify=tk.LEFT,
+                    bg=CARD_BACKGROUND,
+                    fg="#6B7280",
+                )
+                lbl.pack(anchor="w", padx=6, pady=2, fill="x")
+                hint_labels.append(lbl)
+            self._register_group_card(card, title_label, member_labels, hint_labels, column=col)
+        self._schedule_cards_resize()
 
     def _on_resize(self, _event=None) -> None:
         self._update_font_sizes()
@@ -674,6 +713,133 @@ class SimpleGroupsWindow(tk.Toplevel):
         self.font_group_title.configure(size=max(24, int(28 * scale)))
         self.font_member.configure(size=max(20, int(24 * scale)))
         self.font_hint.configure(size=max(18, int(22 * scale)))
+        self._schedule_cards_resize()
+
+    def _schedule_cards_resize(self) -> None:
+        if self._resize_job is not None:
+            try:
+                self.after_cancel(self._resize_job)
+            except Exception:
+                pass
+        self._resize_job = self.after(80, self._resize_all_cards)
+
+    def _resize_all_cards(self) -> None:
+        self._resize_job = None
+        for info in list(self._cards):
+            self._resize_group_card(info)
+
+    def _schedule_single_group_card(self, info: Dict[str, Any]) -> None:
+        if not info.get("frame") or not info["frame"].winfo_exists():
+            return
+        self.after(60, lambda: self._resize_group_card(info))
+
+    def _register_group_card(
+        self,
+        frame: tk.Misc,
+        title_label: tk.Label,
+        member_labels: List[tk.Label],
+        hint_labels: List[tk.Label],
+        *,
+        column: int,
+    ) -> None:
+        title_font = tkfont.Font(
+            family=self.font_group_title.actual("family"),
+            size=self.font_group_title.actual("size"),
+            weight="bold",
+        )
+        member_font = tkfont.Font(
+            family=self.font_member.actual("family"),
+            size=self.font_member.actual("size"),
+        )
+        hint_font = tkfont.Font(
+            family=self.font_hint.actual("family"),
+            size=self.font_hint.actual("size"),
+        )
+        title_label.configure(font=title_font)
+        for lbl in member_labels:
+            lbl.configure(font=member_font)
+        for lbl in hint_labels:
+            lbl.configure(font=hint_font)
+        info = {
+            "frame": frame,
+            "title_label": title_label,
+            "member_labels": member_labels,
+            "hint_labels": hint_labels,
+            "title_font": title_font,
+            "member_font": member_font,
+            "hint_font": hint_font,
+            "column": column,
+        }
+        frame.bind("<Configure>", lambda _e, data=info: self._schedule_single_group_card(data))
+        self._cards.append(info)
+        self._schedule_single_group_card(info)
+
+    def _resize_group_card(self, info: Dict[str, Any]) -> None:
+        frame: tk.Misc = info.get("frame")
+        if not frame or not frame.winfo_exists():
+            return
+        width = frame.winfo_width()
+        height = frame.winfo_height()
+        if width <= 1 or height <= 1:
+            return
+        available_width = max(150, width - 32)
+        available_height = max(120, height - 32)
+        member_labels: List[tk.Label] = info.get("member_labels", [])
+        hint_labels: List[tk.Label] = info.get("hint_labels", [])
+        line_count = len(member_labels) if member_labels else len(hint_labels)
+        line_count = max(1, line_count)
+        base_size = int((available_height / (line_count + 0.7)) * 0.9)
+        base_size = max(18, min(base_size, 54))
+        texts = [lbl.cget("text") for lbl in member_labels]
+        if not texts:
+            texts = [lbl.cget("text") for lbl in hint_labels]
+        longest = max(texts, key=lambda t: len(t), default="")
+        size = base_size
+        while size > 16:
+            info["member_font"].configure(size=size)
+            if not longest or info["member_font"].measure(longest) <= available_width:
+                break
+            size -= 1
+        info["member_font"].configure(size=max(16, size))
+        info["hint_font"].configure(size=max(16, min(size, 42)))
+        title_size = max(size + 3, int(size * 1.16))
+        title_text = info["title_label"].cget("text")
+        while title_size > size and info["title_font"].measure(title_text) > available_width and title_size > 18:
+            title_size -= 1
+        info["title_font"].configure(size=max(18, title_size))
+        wrap = available_width
+        for lbl in member_labels:
+            lbl.configure(wraplength=wrap)
+        for lbl in hint_labels:
+            lbl.configure(wraplength=wrap)
+
+    def _maximize(self) -> None:
+        if not self.winfo_exists():
+            return
+        try:
+            self.attributes("-fullscreen", True)
+            self._fullscreen = True
+        except Exception:
+            self._fullscreen = False
+            try:
+                self.state("zoomed")
+            except Exception:
+                self.geometry("1280x720")
+
+    def _close_display(self, _event=None) -> None:
+        if self._resize_job is not None:
+            try:
+                self.after_cancel(self._resize_job)
+            except Exception:
+                pass
+            self._resize_job = None
+        try:
+            if self._fullscreen:
+                self.attributes("-fullscreen", False)
+        except Exception:
+            pass
+        if self.winfo_exists():
+            self.destroy()
 
 
 class PhaseFrame(ttk.Frame):
@@ -684,14 +850,14 @@ class PhaseFrame(ttk.Frame):
         self._timer_job = None
         self.style = ttk.Style(self)
         self.fonts = {
-            "header_title": tkfont.Font(family="Segoe UI", size=40, weight="bold"),
-            "header_meta": tkfont.Font(family="Segoe UI", size=22),
-            "timer": tkfont.Font(family="Segoe UI", size=110, weight="bold"),
-            "card_title": tkfont.Font(family="Segoe UI", size=32, weight="bold"),
-            "card_item": tkfont.Font(family="Segoe UI", size=26),
-            "card_hint": tkfont.Font(family="Segoe UI", size=24),
-            "button": tkfont.Font(family="Segoe UI", size=22),
-            "combo": tkfont.Font(family="Segoe UI", size=22),
+            "header_title": tkfont.Font(family="Segoe UI", size=32, weight="bold"),
+            "header_meta": tkfont.Font(family="Segoe UI", size=18),
+            "timer": tkfont.Font(family="Segoe UI", size=90, weight="bold"),
+            "card_title": tkfont.Font(family="Segoe UI", size=22, weight="bold"),
+            "card_item": tkfont.Font(family="Segoe UI", size=18),
+            "card_hint": tkfont.Font(family="Segoe UI", size=17),
+            "button": tkfont.Font(family="Segoe UI", size=18),
+            "combo": tkfont.Font(family="Segoe UI", size=18),
         }
         self.style.configure("Card.TLabelframe.Label", font=self.fonts["card_title"])
         self.style.configure("CardTitle.TLabel", font=self.fonts["card_title"])
@@ -699,6 +865,8 @@ class PhaseFrame(ttk.Frame):
         self.style.configure("CardHint.TLabel", font=self.fonts["card_hint"])
         self.style.configure("Modern.TButton", font=self.fonts["button"])
         self.style.configure("Danger.TButton", font=self.fonts["button"])
+        self._card_infos: List[Dict[str, Any]] = []
+        self._card_resize_job: Optional[str] = None
         self.phase_frames: List[ttk.Frame] = []
         self.content = ttk.Frame(self, padding=24)
         self.content.grid(row=0, column=0, sticky="nsew")
@@ -739,15 +907,15 @@ class PhaseFrame(ttk.Frame):
         width = max(self.winfo_width(), 980)
         height = max(self.winfo_height(), 640)
         scale = min(width / 1280, height / 720)
-        scale = max(1.0, min(scale, 3.0))
-        self.fonts["header_title"].configure(size=max(32, int(44 * scale)))
-        self.fonts["header_meta"].configure(size=max(20, int(24 * scale)))
-        self.fonts["timer"].configure(size=max(80, int(120 * scale)))
-        self.fonts["card_title"].configure(size=max(26, int(34 * scale)))
-        self.fonts["card_item"].configure(size=max(22, int(28 * scale)))
-        self.fonts["card_hint"].configure(size=max(20, int(26 * scale)))
-        self.fonts["button"].configure(size=max(18, int(24 * scale)))
-        self.fonts["combo"].configure(size=max(18, int(24 * scale)))
+        scale = max(0.9, min(scale, 2.2))
+        self.fonts["header_title"].configure(size=max(26, int(32 * scale)))
+        self.fonts["header_meta"].configure(size=max(16, int(18 * scale)))
+        self.fonts["timer"].configure(size=max(68, int(90 * scale)))
+        self.fonts["card_title"].configure(size=max(20, int(22 * scale)))
+        self.fonts["card_item"].configure(size=max(17, int(18 * scale)))
+        self.fonts["card_hint"].configure(size=max(16, int(17 * scale)))
+        self.fonts["button"].configure(size=max(16, int(18 * scale)))
+        self.fonts["combo"].configure(size=max(16, int(18 * scale)))
         self.lbl_title.configure(font=self.fonts["header_title"])
         self.lbl_phase.configure(font=self.fonts["header_meta"])
         self.lbl_timer.configure(font=self.fonts["timer"])
@@ -757,7 +925,102 @@ class PhaseFrame(ttk.Frame):
         self.btn_shuffle.configure(style="Modern.TButton")
         self.cmb_student.configure(font=self.fonts["combo"])
         self.cmb_topic.configure(font=self.fonts["combo"])
+        self._schedule_card_resize()
 
+    def _schedule_card_resize(self) -> None:
+        if self._card_resize_job is not None:
+            try:
+                self.after_cancel(self._card_resize_job)
+            except Exception:
+                pass
+        self._card_resize_job = self.after(60, self._resize_all_cards)
+
+    def _resize_all_cards(self) -> None:
+        self._card_resize_job = None
+        for info in list(self._card_infos):
+            self._resize_card(info)
+
+    def _schedule_single_card_resize(self, info: Dict[str, Any]) -> None:
+        if not info.get("frame") or not info["frame"].winfo_exists():
+            return
+        self.after(40, lambda: self._resize_card(info))
+
+    def _register_card(
+        self,
+        frame: tk.Misc,
+        title_label: tk.Label,
+        member_labels: List[tk.Label],
+        hint_labels: List[tk.Label],
+    ) -> None:
+        title_font = tkfont.Font(
+            family=self.fonts["card_title"].actual("family"),
+            size=self.fonts["card_title"].actual("size"),
+            weight="bold",
+        )
+        item_font = tkfont.Font(
+            family=self.fonts["card_item"].actual("family"),
+            size=self.fonts["card_item"].actual("size"),
+        )
+        hint_font = tkfont.Font(
+            family=self.fonts["card_hint"].actual("family"),
+            size=self.fonts["card_hint"].actual("size"),
+        )
+        title_label.configure(font=title_font)
+        for lbl in member_labels:
+            lbl.configure(font=item_font)
+        for lbl in hint_labels:
+            lbl.configure(font=hint_font)
+        info = {
+            "frame": frame,
+            "title_label": title_label,
+            "member_labels": member_labels,
+            "hint_labels": hint_labels,
+            "title_font": title_font,
+            "item_font": item_font,
+            "hint_font": hint_font,
+        }
+        frame.bind("<Configure>", lambda _e, data=info: self._schedule_single_card_resize(data))
+        self._card_infos.append(info)
+        self._schedule_single_card_resize(info)
+
+    def _resize_card(self, info: Dict[str, Any]) -> None:
+        frame: tk.Misc = info.get("frame")
+        if not frame or not frame.winfo_exists():
+            return
+        width = frame.winfo_width()
+        height = frame.winfo_height()
+        if width <= 1 or height <= 1:
+            return
+        available_width = max(120, width - 32)
+        available_height = max(80, height - 24)
+        member_labels: List[tk.Label] = info.get("member_labels", [])
+        hint_labels: List[tk.Label] = info.get("hint_labels", [])
+        line_count = len(member_labels) if member_labels else len(hint_labels)
+        line_count = max(1, line_count)
+        base_size = int((available_height / (line_count + 0.6)) * 0.9)
+        base_size = max(16, min(base_size, 40))
+        texts = [lbl.cget("text") for lbl in member_labels]
+        if not texts:
+            texts = [lbl.cget("text") for lbl in hint_labels]
+        longest = max(texts, key=lambda t: len(t), default="")
+        size = base_size
+        while size > 14:
+            info["item_font"].configure(size=size)
+            if not longest or info["item_font"].measure(longest) <= available_width:
+                break
+            size -= 1
+        info["item_font"].configure(size=max(14, size))
+        info["hint_font"].configure(size=max(14, min(size, 30)))
+        title_size = max(size + 2, int(size * 1.15))
+        title_text = info["title_label"].cget("text")
+        while title_size > size and info["title_font"].measure(title_text) > available_width and title_size > 18:
+            title_size -= 1
+        info["title_font"].configure(size=max(18, title_size))
+        wrap = available_width
+        for lbl in member_labels:
+            lbl.configure(wraplength=wrap)
+        for lbl in hint_labels:
+            lbl.configure(wraplength=wrap)
     def _build(self):
         frame_style = self._frame_style(self.state.phase)
 
@@ -958,7 +1221,7 @@ class PhaseFrame(ttk.Frame):
         wrap = ttk.Labelframe(parent, text=title, style="Card.TLabelframe")
         wrap.pack(fill="both", expand=True, padx=6, pady=6)
 
-        inner = ttk.Frame(wrap, style="CardBody.TFrame", padding=30)
+        inner = ttk.Frame(wrap, style="CardBody.TFrame", padding=24)
         inner.pack(fill="both", expand=True)
 
         items = list(groups.items())
@@ -984,18 +1247,47 @@ class PhaseFrame(ttk.Frame):
             box = ttk.Frame(inner, style="CardBody.TFrame", padding=16)
             box.grid(row=row, column=col, sticky="nsew", padx=16, pady=16)
 
-            ttk.Label(box, text=f"{topic}", style="CardTitle.TLabel").pack(anchor="w", pady=(0, 12))
+            title_label = tk.Label(
+                box,
+                text=f"{topic}",
+                anchor="w",
+                justify=tk.LEFT,
+                bg=CARD_BACKGROUND,
+                fg="#1B1C1E",
+            )
+            title_label.pack(anchor="w", pady=(0, 12), fill="x")
+            member_labels: List[tk.Label] = []
+            hint_labels: List[tk.Label] = []
             if members:
                 for s in members:
-                    ttk.Label(box, text=f"• {s}", style="CardItem.TLabel").pack(anchor="w", padx=8, pady=4)
+                    lbl = tk.Label(
+                        box,
+                        text=f"• {s}",
+                        anchor="w",
+                        justify=tk.LEFT,
+                        bg=CARD_BACKGROUND,
+                        fg="#1B1C1E",
+                    )
+                    lbl.pack(anchor="w", padx=8, pady=3, fill="x")
+                    member_labels.append(lbl)
             else:
-                ttk.Label(box, text="(keine Zuteilung)", style="CardHint.TLabel").pack(anchor="w", padx=8)
+                lbl = tk.Label(
+                    box,
+                    text="(keine Zuteilung)",
+                    anchor="w",
+                    justify=tk.LEFT,
+                    bg=CARD_BACKGROUND,
+                    fg="#6B7280",
+                )
+                lbl.pack(anchor="w", padx=8, pady=3, fill="x")
+                hint_labels.append(lbl)
+            self._register_card(box, title_label, member_labels, hint_labels)
 
     def _render_stamm(self, parent, groups: List[List[Tuple[str, str]]]):
         wrap = ttk.Labelframe(parent, text="Stammgruppen", style="Card.TLabelframe")
         wrap.pack(fill="both", expand=True, padx=6, pady=6)
 
-        inner = ttk.Frame(wrap, style="CardBody.TFrame", padding=30)
+        inner = ttk.Frame(wrap, style="CardBody.TFrame", padding=24)
         inner.pack(fill="both", expand=True)
 
         if not groups:
@@ -1018,12 +1310,41 @@ class PhaseFrame(ttk.Frame):
             box = ttk.Frame(inner, style="CardBody.TFrame", padding=16)
             box.grid(row=row, column=col, sticky="nsew", padx=16, pady=16)
 
-            ttk.Label(box, text=f"Stammgruppe {i}", style="CardTitle.TLabel").pack(anchor="w", pady=(0, 12))
+            title_label = tk.Label(
+                box,
+                text=f"Stammgruppe {i}",
+                anchor="w",
+                justify=tk.LEFT,
+                bg=CARD_BACKGROUND,
+                fg="#1B1C1E",
+            )
+            title_label.pack(anchor="w", pady=(0, 12), fill="x")
+            member_labels: List[tk.Label] = []
+            hint_labels: List[tk.Label] = []
             if grp:
                 for s, t in sorted(grp, key=lambda x: x[0]):
-                    ttk.Label(box, text=f"• {s}  [ {t} ]", style="CardItem.TLabel").pack(anchor="w", padx=8, pady=4)
+                    lbl = tk.Label(
+                        box,
+                        text=f"• {s}  [ {t} ]",
+                        anchor="w",
+                        justify=tk.LEFT,
+                        bg=CARD_BACKGROUND,
+                        fg="#1B1C1E",
+                    )
+                    lbl.pack(anchor="w", padx=8, pady=3, fill="x")
+                    member_labels.append(lbl)
             else:
-                ttk.Label(box, text="(leer)", style="CardHint.TLabel").pack(anchor="w", padx=8)
+                lbl = tk.Label(
+                    box,
+                    text="(leer)",
+                    anchor="w",
+                    justify=tk.LEFT,
+                    bg=CARD_BACKGROUND,
+                    fg="#6B7280",
+                )
+                lbl.pack(anchor="w", padx=8, pady=3, fill="x")
+                hint_labels.append(lbl)
+            self._register_card(box, title_label, member_labels, hint_labels)
 
     def _render(self):
         # Titel/Phase
@@ -1067,6 +1388,13 @@ class PhaseFrame(ttk.Frame):
             self.btn_apply.config(state="disabled")
             self.btn_shuffle.config(state="disabled")
 
+        if self._card_resize_job is not None:
+            try:
+                self.after_cancel(self._card_resize_job)
+            except Exception:
+                pass
+            self._card_resize_job = None
+        self._card_infos.clear()
         self._clear_cols()
 
         if self.state.phase == 1:
