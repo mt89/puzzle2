@@ -867,6 +867,7 @@ class PhaseFrame(ttk.Frame):
         self.style.configure("Danger.TButton", font=self.fonts["button"])
         self._card_infos: List[Dict[str, Any]] = []
         self._card_resize_job: Optional[str] = None
+        self._hint_labels: List[tk.Label] = []
         self.phase_frames: List[ttk.Frame] = []
         self.content = ttk.Frame(self, padding=24)
         self.content.grid(row=0, column=0, sticky="nsew")
@@ -926,6 +927,7 @@ class PhaseFrame(ttk.Frame):
         self.cmb_student.configure(font=self.fonts["combo"])
         self.cmb_topic.configure(font=self.fonts["combo"])
         self._schedule_card_resize()
+        self._update_hint_wrap()
 
     def _schedule_card_resize(self) -> None:
         if self._card_resize_job is not None:
@@ -1095,6 +1097,7 @@ class PhaseFrame(ttk.Frame):
         adj = ttk.Labelframe(self.content, text="Zuteilung anpassen (Phase 1)", style="Card.TLabelframe")
         adj.grid(row=2, column=2, sticky="nsew", padx=(20, 0))
         adj.columnconfigure(0, weight=1)
+        self.adjust_frame = adj
         inner_adj = ttk.Frame(adj, style="CardBody.TFrame", padding=12)
         inner_adj.grid(row=0, column=0, sticky="nsew")
         inner_adj.columnconfigure(0, weight=1)
@@ -1118,7 +1121,7 @@ class PhaseFrame(ttk.Frame):
         self.col_left.grid(row=2, column=0, rowspan=2, sticky="nsew", padx=(0, 20))
         self.col_mid = ttk.Frame(self.content, style=frame_style)
         self.col_mid.grid(row=2, column=1, rowspan=2, sticky="nsew", padx=(0, 20))
-        self.phase_frames.extend([self.content, self.col_left, self.col_mid])
+        self.phase_frames.extend([self.content, self.col_left, self.col_mid, adj])
 
     # ---------- Timer ----------
     def _tick(self):
@@ -1216,6 +1219,34 @@ class PhaseFrame(ttk.Frame):
         for col in (self.col_left, self.col_mid):
             for w in col.winfo_children():
                 w.destroy()
+
+    def _update_hint_wrap(self) -> None:
+        wrap = max(360, int(self.winfo_width() * 0.45))
+        for lbl in list(self._hint_labels):
+            if lbl.winfo_exists():
+                lbl.configure(wraplength=wrap, font=self.fonts["card_hint"])
+            else:
+                self._hint_labels.remove(lbl)
+
+    def _render_hint_card(self, parent: tk.Misc, text: str) -> None:
+        if not text:
+            return
+        wrap = ttk.Labelframe(parent, text="Hinweis", style="Card.TLabelframe")
+        wrap.pack(fill="x", padx=6, pady=6)
+        inner = ttk.Frame(wrap, style="CardBody.TFrame", padding=18)
+        inner.pack(fill="both", expand=True)
+        lbl = tk.Label(
+            inner,
+            text=text,
+            anchor="w",
+            justify=tk.LEFT,
+            bg=CARD_BACKGROUND,
+            fg="#2D3748",
+            font=self.fonts["card_hint"],
+            wraplength=max(360, int(self.winfo_width() * 0.45)),
+        )
+        lbl.pack(anchor="w", fill="x")
+        self._hint_labels.append(lbl)
 
     def _render_lists(self, parent, title: str, groups: Dict[str, List[str]]):
         wrap = ttk.Labelframe(parent, text=title, style="Card.TLabelframe")
@@ -1388,6 +1419,17 @@ class PhaseFrame(ttk.Frame):
             self.btn_apply.config(state="disabled")
             self.btn_shuffle.config(state="disabled")
 
+        if self.state.phase == 1:
+            self.adjust_frame.grid(row=2, column=2, sticky="nsew", padx=(20, 0))
+            self.content.columnconfigure(2, weight=1)
+        else:
+            self.adjust_frame.grid_remove()
+            self.content.columnconfigure(2, weight=0)
+
+        self.col_mid.grid_remove()
+        self.content.columnconfigure(1, weight=4)
+        self.col_left.grid_configure(column=0, columnspan=2, padx=(0, 20))
+
         if self._card_resize_job is not None:
             try:
                 self.after_cancel(self._card_resize_job)
@@ -1395,6 +1437,7 @@ class PhaseFrame(ttk.Frame):
                 pass
             self._card_resize_job = None
         self._card_infos.clear()
+        self._hint_labels.clear()
         self._clear_cols()
 
         if self.state.phase == 1:
@@ -1417,16 +1460,7 @@ class PhaseFrame(ttk.Frame):
             2: "Bereitet pro Thema ein kurzes Merkblatt/Poster vor.",
             3: "Jede Gruppe hat idealerweise 1 Person pro Thema.",
         }
-        wrap = max(420, int(self.winfo_width() * 0.32))
-        tk.Label(
-            self.col_mid,
-            text=hints.get(self.state.phase, ""),
-            fg="#2D3748",
-            bg=PHASE_BACKGROUNDS.get(self.state.phase, PHASE_BACKGROUNDS[1]),
-            wraplength=wrap,
-            justify=tk.LEFT,
-            font=self.fonts["card_hint"],
-        ).pack(anchor="nw", pady=20, padx=12)
+        self._render_hint_card(self.col_left, hints.get(self.state.phase, ""))
 
 
 # -------------------- Hauptanwendung --------------------
