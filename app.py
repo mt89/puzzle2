@@ -19,7 +19,7 @@ import json
 import random
 import tkinter as tk
 from pathlib import Path
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, font as tkfont
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -29,12 +29,12 @@ if sys.platform.startswith("win"):
     import ctypes  # wird nur unter Windows importiert
 
 APP_TITLE = "Jigsaw Controller - Expertenpuzzle"
-BASE_FONT = ("Segoe UI", 12)
-TITLE_FONT = ("Segoe UI", 18, "bold")
-TIMER_FONT = ("Segoe UI", 36, "bold")
-CARD_TITLE_FONT = ("Segoe UI", 20, "bold")
-CARD_ITEM_FONT = ("Segoe UI", 18)
-CARD_HINT_FONT = ("Segoe UI", 16)
+BASE_FONT = ("Segoe UI", 13)
+TITLE_FONT = ("Segoe UI", 20, "bold")
+TIMER_FONT = ("Segoe UI", 40, "bold")
+CARD_TITLE_FONT = ("Segoe UI", 22, "bold")
+CARD_ITEM_FONT = ("Segoe UI", 20)
+CARD_HINT_FONT = ("Segoe UI", 18)
 
 LIGHT_BACKGROUND = "#F4F6FB"
 CARD_BACKGROUND = "#FFFFFF"
@@ -208,9 +208,7 @@ def build_simple_groups(students: List[str], group_count: int, seed: Optional[in
     if group_count <= 0 or not students:
         return []
     count = min(group_count, len(students))
-    rng = random.Random()
-    if seed is not None:
-        rng.seed(seed)
+    rng = random.Random(seed) if seed is not None else random.Random()
     shuffled = students.copy()
     rng.shuffle(shuffled)
     groups: List[List[str]] = [[] for _ in range(count)]
@@ -235,6 +233,7 @@ class SetupFrame(ttk.Frame):
         self.on_start = on_start
         self.on_classes_changed = on_classes_changed
         self._defaults = (state.dur_read, state.dur_expert, state.dur_stamm)
+        self._simple_group_window: Optional["SimpleGroupsWindow"] = None
         self._build()
 
     def _build(self):
@@ -339,6 +338,21 @@ class SetupFrame(ttk.Frame):
             command=self._randomize_seed,
         ).pack(side=tk.LEFT, padx=(8, 0))
 
+        # Einfachgruppen
+        simple_box = ttk.Labelframe(self, text="Einfachgruppen", style="App.TLabelframe")
+        simple_box.grid(row=6, column=0, columnspan=4, sticky="ew", pady=(0, 20))
+        simple_box.columnconfigure(1, weight=1)
+        ttk.Label(simple_box, text="Lernende zufaellig in Gruppen einteilen:").grid(row=0, column=0, padx=12, pady=8, sticky="w")
+        self.var_simple_group_count = tk.IntVar(value=4)
+        ttk.Spinbox(simple_box, from_=2, to=12, textvariable=self.var_simple_group_count, width=6).grid(row=0, column=1, padx=12, pady=8, sticky="w")
+        ttk.Button(
+            simple_box,
+            text=button_label("start", "Gruppen bilden"),
+            style="Modern.TButton",
+            width=PRIMARY_BUTTON_WIDTH,
+            command=self._open_simple_groups,
+        ).grid(row=0, column=2, padx=(8, 16), pady=8, sticky="e")
+
         # Start-Button
         start_btn = ttk.Button(
             self,
@@ -347,7 +361,7 @@ class SetupFrame(ttk.Frame):
             width=PRIMARY_BUTTON_WIDTH,
             command=self._start,
         )
-        start_btn.grid(row=6, column=0, sticky="w", pady=(0, 0))
+        start_btn.grid(row=7, column=0, sticky="w", pady=(0, 0))
 
         # Grid-Konfiguration
         self.columnconfigure(0, weight=1)
@@ -499,6 +513,32 @@ class SetupFrame(ttk.Frame):
         self._reset_form()
         messagebox.showinfo("Geloescht", f"Klasse '{name}' wurde entfernt.")
 
+    def _open_simple_groups(self) -> None:
+        try:
+            count = max(2, int(self.var_simple_group_count.get()))
+        except (TypeError, ValueError):
+            messagebox.showwarning("Hinweis", "Bitte eine gueltige Gruppenzahl angeben (mindestens 2).")
+            return
+        students = clean_lines(self.txt_names.get("1.0", tk.END))
+        if len(students) < count:
+            messagebox.showwarning(
+                "Hinweis",
+                "Es werden mehr Lernende benoetigt als Gruppen vorhanden sind. Bitte Liste pruefen.",
+            )
+            return
+        seed = random.randint(0, 999999)
+        groups = build_simple_groups(students, count, seed=seed)
+
+        self.state.simple_groups = groups
+        if self._simple_group_window and self._simple_group_window.winfo_exists():
+            self._simple_group_window.destroy()
+        self._simple_group_window = SimpleGroupsWindow(
+            self.winfo_toplevel(),
+            groups,
+            seed=seed,
+            class_name=self.state.class_name or self.var_class_name.get().strip() or "-",
+        )
+
     def _start(self):
         students = clean_lines(self.txt_names.get("1.0", tk.END))
         topics = [v.get().strip() for v in self.topic_vars if v.get().strip()]
@@ -516,6 +556,10 @@ class SetupFrame(ttk.Frame):
         self.state.dur_stamm = int(self.var_stamm.get())
         self.state.seed = int(self.var_seed.get())
 
+        if self._simple_group_window and self._simple_group_window.winfo_exists():
+            self._simple_group_window.destroy()
+            self._simple_group_window = None
+
         self.state.assignment = assign_topics_evenly(self.state.students, self.state.topics, seed=self.state.seed)
         self.state.experts = invert_to_experts(self.state.assignment)
         self.state.stammgruppen = build_stammgruppen(self.state.experts)
@@ -527,6 +571,111 @@ class SetupFrame(ttk.Frame):
         self.on_start()
 
 
+class SimpleGroupsWindow(tk.Toplevel):
+    def __init__(self, master: tk.Misc, groups: List[List[str]], seed: int, class_name: str = "-"):
+        super().__init__(master)
+        self.title("Einfachgruppen")
+        self.groups = groups
+        self.seed = seed
+        self.class_name = class_name or "-"
+        self.configure(bg=LIGHT_BACKGROUND)
+        self.geometry("960x640")
+        self.minsize(780, 520)
+        try:
+            self.transient(master)
+        except Exception:
+            pass
+        self.focus_set()
+
+        self.font_header = tkfont.Font(family="Segoe UI", size=34, weight="bold")
+        self.font_meta = tkfont.Font(family="Segoe UI", size=20)
+        self.font_group_title = tkfont.Font(family="Segoe UI", size=28, weight="bold")
+        self.font_member = tkfont.Font(family="Segoe UI", size=24)
+        self.font_hint = tkfont.Font(family="Segoe UI", size=22)
+
+        self.container = ttk.Frame(self, padding=24, style="AppBackground.TFrame")
+        self.container.pack(fill="both", expand=True)
+
+        self.header_bar = tk.Frame(self.container, bg="#3949AB")
+        self.header_bar.pack(fill="x", pady=(0, 20))
+        tk.Label(
+            self.header_bar,
+            text="Einfachgruppen",
+            font=self.font_header,
+            fg=HEADER_TEXT_COLOR,
+            bg="#3949AB",
+        ).pack(side=tk.LEFT, padx=20, pady=12)
+        tk.Label(
+            self.header_bar,
+            text=f"Klasse: {self.class_name}    |    Gruppen: {len(groups)}    |    Seed: {self.seed:06d}",
+            font=self.font_meta,
+            fg=HEADER_TEXT_COLOR,
+            bg="#3949AB",
+        ).pack(side=tk.LEFT, padx=(12, 0))
+
+        self.groups_frame = ttk.Frame(self.container, style="AppBackground.TFrame")
+        self.groups_frame.pack(fill="both", expand=True)
+
+        self._render_groups()
+        self.bind("<Configure>", self._on_resize)
+        self.after(0, self._update_font_sizes)
+
+    def _render_groups(self) -> None:
+        for child in self.groups_frame.winfo_children():
+            child.destroy()
+        if not self.groups:
+            ttk.Label(
+                self.groups_frame,
+                text="Keine Lernenden vorhanden.",
+                font=self.font_hint,
+                foreground="#6B7280",
+            ).pack(expand=True)
+            return
+
+        group_count = len(self.groups)
+        if group_count <= 3:
+            columns = 1
+        elif group_count <= 6:
+            columns = 2
+        else:
+            columns = 3
+
+        for idx in range(columns):
+            self.groups_frame.columnconfigure(idx, weight=1)
+
+        for i, group in enumerate(self.groups, start=1):
+            col = (i - 1) % columns
+            row = (i - 1) // columns
+            self.groups_frame.rowconfigure(row, weight=1)
+            card = ttk.Frame(self.groups_frame, style="CardBody.TFrame", padding=20)
+            card.grid(row=row, column=col, padx=14, pady=14, sticky="nsew")
+            ttk.Label(card, text=f"Gruppe {i}", font=self.font_group_title).pack(anchor="w", pady=(0, 8))
+            if group:
+                for name in group:
+                    ttk.Label(card, text=name, font=self.font_member).pack(anchor="w", padx=6, pady=2)
+            else:
+                ttk.Label(
+                    card,
+                    text="(leer)",
+                    font=self.font_hint,
+                    foreground="#6B7280",
+                ).pack(anchor="w", padx=6, pady=2)
+
+    def _on_resize(self, _event=None) -> None:
+        self._update_font_sizes()
+
+    def _update_font_sizes(self) -> None:
+        width = max(self.winfo_width(), 780)
+        height = max(self.winfo_height(), 520)
+        scale = min(width / 960, height / 640)
+        scale = max(0.95, min(scale, 2.4))
+        self.font_header.configure(size=max(28, int(34 * scale)))
+        self.font_meta.configure(size=max(18, int(20 * scale)))
+        self.font_group_title.configure(size=max(24, int(28 * scale)))
+        self.font_member.configure(size=max(20, int(24 * scale)))
+        self.font_hint.configure(size=max(18, int(22 * scale)))
+
+
 class PhaseFrame(ttk.Frame):
     def __init__(self, master: tk.Misc, state: AppState, on_restart):
         super().__init__(master)
@@ -534,19 +683,36 @@ class PhaseFrame(ttk.Frame):
         self.on_restart = on_restart
         self._timer_job = None
         self.style = ttk.Style(self)
+        self.fonts = {
+            "header_title": tkfont.Font(family="Segoe UI", size=40, weight="bold"),
+            "header_meta": tkfont.Font(family="Segoe UI", size=22),
+            "timer": tkfont.Font(family="Segoe UI", size=110, weight="bold"),
+            "card_title": tkfont.Font(family="Segoe UI", size=32, weight="bold"),
+            "card_item": tkfont.Font(family="Segoe UI", size=26),
+            "card_hint": tkfont.Font(family="Segoe UI", size=24),
+            "button": tkfont.Font(family="Segoe UI", size=22),
+            "combo": tkfont.Font(family="Segoe UI", size=22),
+        }
+        self.style.configure("Card.TLabelframe.Label", font=self.fonts["card_title"])
+        self.style.configure("CardTitle.TLabel", font=self.fonts["card_title"])
+        self.style.configure("CardItem.TLabel", font=self.fonts["card_item"])
+        self.style.configure("CardHint.TLabel", font=self.fonts["card_hint"])
+        self.style.configure("Modern.TButton", font=self.fonts["button"])
+        self.style.configure("Danger.TButton", font=self.fonts["button"])
         self.phase_frames: List[ttk.Frame] = []
         self.content = ttk.Frame(self, padding=24)
         self.content.grid(row=0, column=0, sticky="nsew")
         self.columnconfigure(0, weight=1)
         self.rowconfigure(0, weight=1)
-        self.content.columnconfigure(0, weight=1)
-        self.content.columnconfigure(1, weight=1)
+        self.content.columnconfigure(0, weight=4)
+        self.content.columnconfigure(1, weight=2)
         self.content.columnconfigure(2, weight=1)
         self.content.rowconfigure(2, weight=1)
         self.content.rowconfigure(3, weight=1)
-        self.var_simple_group_count = tk.IntVar(value=4)
         self._build()
         self._render()
+        self.bind("<Configure>", self._on_resize)
+        self.after(0, self._update_font_sizes)
 
     def _frame_style(self, phase: int) -> str:
         return f"Phase{phase}.TFrame"
@@ -565,7 +731,32 @@ class PhaseFrame(ttk.Frame):
         self.lbl_title.configure(bg=accent, fg=HEADER_TEXT_COLOR)
         self.lbl_phase.configure(bg=accent, fg=HEADER_TEXT_COLOR)
         self.lbl_timer.configure(bg=bg)
-        self.simple_group_label.configure(bg=bg)
+
+    def _on_resize(self, _event=None) -> None:
+        self._update_font_sizes()
+
+    def _update_font_sizes(self) -> None:
+        width = max(self.winfo_width(), 980)
+        height = max(self.winfo_height(), 640)
+        scale = min(width / 1280, height / 720)
+        scale = max(1.0, min(scale, 3.0))
+        self.fonts["header_title"].configure(size=max(32, int(44 * scale)))
+        self.fonts["header_meta"].configure(size=max(20, int(24 * scale)))
+        self.fonts["timer"].configure(size=max(80, int(120 * scale)))
+        self.fonts["card_title"].configure(size=max(26, int(34 * scale)))
+        self.fonts["card_item"].configure(size=max(22, int(28 * scale)))
+        self.fonts["card_hint"].configure(size=max(20, int(26 * scale)))
+        self.fonts["button"].configure(size=max(18, int(24 * scale)))
+        self.fonts["combo"].configure(size=max(18, int(24 * scale)))
+        self.lbl_title.configure(font=self.fonts["header_title"])
+        self.lbl_phase.configure(font=self.fonts["header_meta"])
+        self.lbl_timer.configure(font=self.fonts["timer"])
+        self.btn_toggle.configure(style="Modern.TButton")
+        self.btn_next.configure(style="Modern.TButton")
+        self.btn_apply.configure(style="Modern.TButton")
+        self.btn_shuffle.configure(style="Modern.TButton")
+        self.cmb_student.configure(font=self.fonts["combo"])
+        self.cmb_topic.configure(font=self.fonts["combo"])
 
     def _build(self):
         frame_style = self._frame_style(self.state.phase)
@@ -576,9 +767,21 @@ class PhaseFrame(ttk.Frame):
         self.phase_frames.append(self.header_container)
         self.header_bar = tk.Frame(self.header_container, bg=PHASE_ACCENTS.get(self.state.phase, "#1E88E5"))
         self.header_bar.pack(fill="x", pady=(0, 20))
-        self.lbl_title = tk.Label(self.header_bar, text="", font=TITLE_FONT, fg=HEADER_TEXT_COLOR, bg=self.header_bar["bg"])
+        self.lbl_title = tk.Label(
+            self.header_bar,
+            text="",
+            font=self.fonts["header_title"],
+            fg=HEADER_TEXT_COLOR,
+            bg=self.header_bar["bg"],
+        )
         self.lbl_title.pack(side=tk.LEFT, padx=20, pady=12)
-        self.lbl_phase = tk.Label(self.header_bar, text="", font=("Segoe UI", 14), fg=HEADER_TEXT_COLOR, bg=self.header_bar["bg"])
+        self.lbl_phase = tk.Label(
+            self.header_bar,
+            text="",
+            font=self.fonts["header_meta"],
+            fg=HEADER_TEXT_COLOR,
+            bg=self.header_bar["bg"],
+        )
         self.lbl_phase.pack(side=tk.LEFT, padx=(12, 0))
 
         # Timer + Controls
@@ -588,7 +791,7 @@ class PhaseFrame(ttk.Frame):
         self.lbl_timer = tk.Label(
             self.ctrl,
             text=mmss(self.state.seconds_left),
-            font=TIMER_FONT,
+            font=self.fonts["timer"],
             bg=PHASE_BACKGROUNDS.get(self.state.phase, PHASE_BACKGROUNDS[1]),
             fg="#1B1C1E",
         )
@@ -625,22 +828,6 @@ class PhaseFrame(ttk.Frame):
             command=self._restart,
         ).pack(side=tk.LEFT, padx=(24, 0))
 
-        # Einfachgruppen Creator
-        self.simple_group_container = ttk.Frame(self.ctrl, style=frame_style)
-        self.simple_group_container.pack(side=tk.LEFT, padx=(32, 0))
-        ttk.Label(self.simple_group_container, text="Einfachgruppen:").pack(side=tk.LEFT, padx=(0, 6))
-        self.simple_group_entry = ttk.Entry(self.simple_group_container, width=5, textvariable=self.var_simple_group_count, justify="center")
-        self.simple_group_entry.pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(
-            self.simple_group_container,
-            text="Erstellen",
-            style="Modern.TButton",
-            width=12,
-            command=self._create_simple_groups,
-        ).pack(side=tk.LEFT)
-        self.simple_group_label = tk.Label(self.ctrl, text="", font=("Segoe UI", 14), fg="#1B1C1E")
-        self.simple_group_label.pack(side=tk.LEFT, padx=(16, 0))
-
         # Anpassung: Schueler -> Thema
         adj = ttk.Labelframe(self.content, text="Zuteilung anpassen (Phase 1)", style="Card.TLabelframe")
         adj.grid(row=2, column=2, sticky="nsew", padx=(20, 0))
@@ -648,9 +835,9 @@ class PhaseFrame(ttk.Frame):
         inner_adj = ttk.Frame(adj, style="CardBody.TFrame", padding=12)
         inner_adj.grid(row=0, column=0, sticky="nsew")
         inner_adj.columnconfigure(0, weight=1)
-        self.cmb_student = ttk.Combobox(inner_adj, values=self.state.students, state="readonly", font=("Segoe UI", 13))
+        self.cmb_student = ttk.Combobox(inner_adj, values=self.state.students, state="readonly", font=self.fonts["combo"])
         self.cmb_student.grid(row=0, column=0, padx=6, pady=6, sticky="ew")
-        self.cmb_topic = ttk.Combobox(inner_adj, values=self.state.topics, state="readonly", font=("Segoe UI", 13))
+        self.cmb_topic = ttk.Combobox(inner_adj, values=self.state.topics, state="readonly", font=self.fonts["combo"])
         self.cmb_topic.grid(row=1, column=0, padx=6, pady=6, sticky="ew")
         self.btn_apply = ttk.Button(inner_adj, text="Anwenden", style="Modern.TButton", width=PRIMARY_BUTTON_WIDTH, command=self._apply_change)
         self.btn_apply.grid(row=2, column=0, padx=6, pady=6, sticky="ew")
@@ -716,7 +903,6 @@ class PhaseFrame(ttk.Frame):
             # Beim Wechsel ggf. Stammgruppen neu bauen (falls Zuteilung geaendert wurde)
             self.state.experts = invert_to_experts(self.state.assignment)
             self.state.stammgruppen = build_stammgruppen(self.state.experts)
-            self.state.simple_groups = []
             self._render()
         else:
             self.state.running = False
@@ -743,7 +929,6 @@ class PhaseFrame(ttk.Frame):
         self.state.assignment[s] = t
         self.state.experts = invert_to_experts(self.state.assignment)
         self.state.stammgruppen = build_stammgruppen(self.state.experts)
-        self.state.simple_groups = []
         self.cmb_student.set("")
         self.cmb_topic.set("")
         self._render()
@@ -759,29 +944,8 @@ class PhaseFrame(ttk.Frame):
         self.state.assignment = assign_topics_evenly(self.state.students, self.state.topics, seed=self.state.seed)
         self.state.experts = invert_to_experts(self.state.assignment)
         self.state.stammgruppen = build_stammgruppen(self.state.experts)
-        self.state.simple_groups = []
         self.cmb_student.set("")
         self.cmb_topic.set("")
-        self._render()
-
-    def _create_simple_groups(self):
-        try:
-            desired = int(self.var_simple_group_count.get())
-        except (TypeError, ValueError, tk.TclError):
-            messagebox.showerror("Fehler", "Bitte eine gueltige Zahl fuer die Anzahl Gruppen eingeben.")
-            return
-        if desired < 1:
-            messagebox.showwarning("Hinweis", "Die Anzahl der Gruppen muss mindestens 1 betragen.")
-            return
-        if not self.state.students:
-            messagebox.showwarning("Hinweis", "Keine Schueler vorhanden, um Gruppen zu bilden.")
-            return
-        seed = random.randint(0, 999999)
-        self.state.simple_groups = build_simple_groups(self.state.students, desired, seed=seed)
-        if not self.state.simple_groups:
-            messagebox.showwarning("Hinweis", "Gruppen konnten nicht erstellt werden.")
-            return
-        self.simple_group_label.config(text=f"{len(self.state.simple_groups)} Gruppen erstellt")
         self._render()
 
     # ---------- Render ----------
@@ -792,70 +956,74 @@ class PhaseFrame(ttk.Frame):
 
     def _render_lists(self, parent, title: str, groups: Dict[str, List[str]]):
         wrap = ttk.Labelframe(parent, text=title, style="Card.TLabelframe")
-        wrap.pack(fill="both", expand=True, padx=4, pady=4)
+        wrap.pack(fill="both", expand=True, padx=6, pady=6)
 
-        inner = ttk.Frame(wrap, style="CardBody.TFrame", padding=18)
+        inner = ttk.Frame(wrap, style="CardBody.TFrame", padding=30)
         inner.pack(fill="both", expand=True)
 
-        cols = [ttk.Frame(inner, style="CardBody.TFrame") for _ in range(2)]
-        cols[0].pack(side=tk.LEFT, fill="both", expand=True, padx=(0, 12))
-        cols[1].pack(side=tk.LEFT, fill="both", expand=True, padx=(12, 0))
-
         items = list(groups.items())
-        for i, (topic, members) in enumerate(items):
-            box = ttk.Frame(cols[i % 2], style="CardBody.TFrame", padding=10)
-            box.pack(fill="x", expand=True, pady=10)
+        if not items:
+            ttk.Label(inner, text="Keine Daten vorhanden.", style="CardHint.TLabel").pack(expand=True)
+            return
 
-            ttk.Label(box, text=f"{topic}", style="CardTitle.TLabel").pack(anchor="w", pady=(0, 8))
+        count = len(items)
+        if count <= 3:
+            columns = 1
+        elif count <= 8:
+            columns = 2
+        else:
+            columns = 3
+
+        for idx in range(columns):
+            inner.columnconfigure(idx, weight=1)
+
+        for i, (topic, members) in enumerate(items):
+            row = i // columns
+            col = i % columns
+            inner.rowconfigure(row, weight=1)
+            box = ttk.Frame(inner, style="CardBody.TFrame", padding=16)
+            box.grid(row=row, column=col, sticky="nsew", padx=16, pady=16)
+
+            ttk.Label(box, text=f"{topic}", style="CardTitle.TLabel").pack(anchor="w", pady=(0, 12))
             if members:
                 for s in members:
-                    ttk.Label(box, text=f"• {s}", style="CardItem.TLabel").pack(anchor="w", padx=4, pady=3)
+                    ttk.Label(box, text=f"• {s}", style="CardItem.TLabel").pack(anchor="w", padx=8, pady=4)
             else:
-                ttk.Label(box, text="(keine Zuteilung)", style="CardHint.TLabel").pack(anchor="w", padx=4)
+                ttk.Label(box, text="(keine Zuteilung)", style="CardHint.TLabel").pack(anchor="w", padx=8)
 
     def _render_stamm(self, parent, groups: List[List[Tuple[str, str]]]):
         wrap = ttk.Labelframe(parent, text="Stammgruppen", style="Card.TLabelframe")
-        wrap.pack(fill="both", expand=True, padx=4, pady=4)
+        wrap.pack(fill="both", expand=True, padx=6, pady=6)
 
-        inner = ttk.Frame(wrap, style="CardBody.TFrame", padding=18)
+        inner = ttk.Frame(wrap, style="CardBody.TFrame", padding=30)
         inner.pack(fill="both", expand=True)
 
-        cols = [ttk.Frame(inner, style="CardBody.TFrame") for _ in range(3)]
-        for i, c in enumerate(cols):
-            c.pack(side=tk.LEFT, fill="both", expand=True, padx=12)
+        if not groups:
+            ttk.Label(inner, text="Keine Gruppen erzeugt.", style="CardHint.TLabel").pack(expand=True)
+            return
+
+        count = len(groups)
+        if count <= 4:
+            columns = 2
+        else:
+            columns = 3
+
+        for idx in range(columns):
+            inner.columnconfigure(idx, weight=1)
 
         for i, grp in enumerate(groups, start=1):
-            box = ttk.Frame(cols[(i - 1) % 3], style="CardBody.TFrame", padding=10)
-            box.pack(fill="x", expand=True, pady=10)
+            row = (i - 1) // columns
+            col = (i - 1) % columns
+            inner.rowconfigure(row, weight=1)
+            box = ttk.Frame(inner, style="CardBody.TFrame", padding=16)
+            box.grid(row=row, column=col, sticky="nsew", padx=16, pady=16)
 
-            ttk.Label(box, text=f"Stammgruppe {i}", style="CardTitle.TLabel").pack(anchor="w", pady=(0, 8))
+            ttk.Label(box, text=f"Stammgruppe {i}", style="CardTitle.TLabel").pack(anchor="w", pady=(0, 12))
             if grp:
                 for s, t in sorted(grp, key=lambda x: x[0]):
-                    ttk.Label(box, text=f"• {s}  [ {t} ]", style="CardItem.TLabel").pack(anchor="w", padx=4, pady=3)
+                    ttk.Label(box, text=f"• {s}  [ {t} ]", style="CardItem.TLabel").pack(anchor="w", padx=8, pady=4)
             else:
-                ttk.Label(box, text="(leer)", style="CardHint.TLabel").pack(anchor="w", padx=4)
-
-    def _render_simple_groups(self, parent, groups: List[List[str]]):
-        wrap = ttk.Labelframe(parent, text="Einfachgruppen", style="Card.TLabelframe")
-        wrap.pack(fill="both", expand=True, padx=4, pady=4)
-
-        inner = ttk.Frame(wrap, style="CardBody.TFrame", padding=18)
-        inner.pack(fill="both", expand=True)
-
-        cols = [ttk.Frame(inner, style="CardBody.TFrame") for _ in range(3)]
-        for i, c in enumerate(cols):
-            c.pack(side=tk.LEFT, fill="both", expand=True, padx=12)
-
-        for i, grp in enumerate(groups, start=1):
-            box = ttk.Frame(cols[(i - 1) % 3], style="CardBody.TFrame", padding=10)
-            box.pack(fill="x", expand=True, pady=10)
-
-            ttk.Label(box, text=f"Gruppe {i}", style="CardTitle.TLabel").pack(anchor="w", pady=(0, 8))
-            if grp:
-                for s in grp:
-                    ttk.Label(box, text=f"• {s}", style="CardItem.TLabel").pack(anchor="w", padx=4, pady=3)
-            else:
-                ttk.Label(box, text="(leer)", style="CardHint.TLabel").pack(anchor="w", padx=4)
+                ttk.Label(box, text="(leer)", style="CardHint.TLabel").pack(anchor="w", padx=8)
 
     def _render(self):
         # Titel/Phase
@@ -899,9 +1067,6 @@ class PhaseFrame(ttk.Frame):
             self.btn_apply.config(state="disabled")
             self.btn_shuffle.config(state="disabled")
 
-        if not self.state.simple_groups:
-            self.simple_group_label.config(text="")
-
         self._clear_cols()
 
         if self.state.phase == 1:
@@ -919,23 +1084,21 @@ class PhaseFrame(ttk.Frame):
             # Stammgruppen
             self._render_stamm(self.col_left, self.state.stammgruppen)
 
-        if self.state.simple_groups:
-            self._render_simple_groups(self.col_mid, self.state.simple_groups)
-        else:
-            hints = {
-                1: "Hinweis: Zuteilungen koennen rechts angepasst werden.",
-                2: "Bereitet pro Thema ein kurzes Merkblatt/Poster vor.",
-                3: "Jede Gruppe hat idealerweise 1 Person pro Thema.",
-            }
-            tk.Label(
-                self.col_mid,
-                text=hints.get(self.state.phase, "Nutzen Sie die Einfachgruppen, um spontane Teams zu bilden."),
-                fg="#2D3748",
-                bg=PHASE_BACKGROUNDS.get(self.state.phase, PHASE_BACKGROUNDS[1]),
-                wraplength=360,
-                justify=tk.LEFT,
-                font=("Segoe UI", 16),
-            ).pack(anchor="nw", pady=12, padx=6)
+        hints = {
+            1: "Hinweis: Zuteilungen koennen rechts angepasst werden.",
+            2: "Bereitet pro Thema ein kurzes Merkblatt/Poster vor.",
+            3: "Jede Gruppe hat idealerweise 1 Person pro Thema.",
+        }
+        wrap = max(420, int(self.winfo_width() * 0.32))
+        tk.Label(
+            self.col_mid,
+            text=hints.get(self.state.phase, ""),
+            fg="#2D3748",
+            bg=PHASE_BACKGROUNDS.get(self.state.phase, PHASE_BACKGROUNDS[1]),
+            wraplength=wrap,
+            justify=tk.LEFT,
+            font=self.fonts["card_hint"],
+        ).pack(anchor="nw", pady=20, padx=12)
 
 
 # -------------------- Hauptanwendung --------------------
