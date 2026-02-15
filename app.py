@@ -16,7 +16,6 @@
 # -------------------------------------------------------------
 
 import json
-import math
 import random
 import tkinter as tk
 from pathlib import Path
@@ -218,16 +217,6 @@ def build_simple_groups(students: List[str], group_count: int, seed: Optional[in
     return groups
 
 
-def build_simple_groups_by_size(students: List[str], group_size: int, seed: Optional[int] = None) -> List[List[str]]:
-    if group_size <= 0 or not students:
-        return []
-    size = max(1, int(group_size))
-    rng = random.Random(seed) if seed is not None else random.Random()
-    shuffled = students.copy()
-    rng.shuffle(shuffled)
-    return [shuffled[i:i + size] for i in range(0, len(shuffled), size)]
-
-
 def mmss(sec: int) -> str:
     sec = max(0, int(sec))
     m, s = divmod(sec, 60)
@@ -354,28 +343,15 @@ class SetupFrame(ttk.Frame):
         simple_box.grid(row=6, column=0, columnspan=4, sticky="ew", pady=(0, 20))
         simple_box.columnconfigure(1, weight=1)
         ttk.Label(simple_box, text="Lernende zufaellig in Gruppen einteilen:").grid(row=0, column=0, padx=12, pady=8, sticky="w")
-        self.var_simple_group_mode = tk.StringVar(value="count")
-        ttk.Radiobutton(
-            simple_box,
-            text="Anzahl Gruppen",
-            value="count",
-            variable=self.var_simple_group_mode,
-        ).grid(row=0, column=1, padx=(0, 10), pady=8, sticky="w")
-        ttk.Radiobutton(
-            simple_box,
-            text="Gruppengroesse (z. B. 3er)",
-            value="size",
-            variable=self.var_simple_group_mode,
-        ).grid(row=0, column=2, padx=(0, 10), pady=8, sticky="w")
         self.var_simple_group_count = tk.IntVar(value=4)
-        ttk.Spinbox(simple_box, from_=2, to=30, textvariable=self.var_simple_group_count, width=6).grid(row=0, column=3, padx=12, pady=8, sticky="w")
+        ttk.Spinbox(simple_box, from_=2, to=12, textvariable=self.var_simple_group_count, width=6).grid(row=0, column=1, padx=12, pady=8, sticky="w")
         ttk.Button(
             simple_box,
             text=button_label("start", "Gruppen bilden"),
             style="Modern.TButton",
             width=PRIMARY_BUTTON_WIDTH,
             command=self._open_simple_groups,
-        ).grid(row=0, column=4, padx=(8, 16), pady=8, sticky="e")
+        ).grid(row=0, column=2, padx=(8, 16), pady=8, sticky="e")
 
         # Start-Button
         start_btn = ttk.Button(
@@ -539,29 +515,19 @@ class SetupFrame(ttk.Frame):
 
     def _open_simple_groups(self) -> None:
         try:
-            requested = max(2, int(self.var_simple_group_count.get()))
+            count = max(2, int(self.var_simple_group_count.get()))
         except (TypeError, ValueError):
-            messagebox.showwarning("Hinweis", "Bitte eine gueltige Zahl angeben (mindestens 2).")
+            messagebox.showwarning("Hinweis", "Bitte eine gueltige Gruppenzahl angeben (mindestens 2).")
             return
         students = clean_lines(self.txt_names.get("1.0", tk.END))
-        if len(students) < 2:
-            messagebox.showwarning("Hinweis", "Bitte mindestens zwei Lernende erfassen.")
+        if len(students) < count:
+            messagebox.showwarning(
+                "Hinweis",
+                "Es werden mehr Lernende benoetigt als Gruppen vorhanden sind. Bitte Liste pruefen.",
+            )
             return
-
-        mode = self.var_simple_group_mode.get().strip().lower()
         seed = random.randint(0, 999999)
-        if mode == "size":
-            groups = build_simple_groups_by_size(students, requested, seed=seed)
-            mode_label = f"{requested} pro Gruppe"
-        else:
-            if len(students) < requested:
-                messagebox.showwarning(
-                    "Hinweis",
-                    "Es werden mehr Lernende benoetigt als Gruppen vorhanden sind. Bitte Liste pruefen.",
-                )
-                return
-            groups = build_simple_groups(students, requested, seed=seed)
-            mode_label = f"{len(groups)} Gruppen"
+        groups = build_simple_groups(students, count, seed=seed)
 
         self.state.simple_groups = groups
         if self._simple_group_window and self._simple_group_window.winfo_exists():
@@ -571,7 +537,6 @@ class SetupFrame(ttk.Frame):
             groups,
             seed=seed,
             class_name=self.state.class_name or self.var_class_name.get().strip() or "-",
-            mode_label=mode_label,
         )
 
     def _start(self):
@@ -607,13 +572,12 @@ class SetupFrame(ttk.Frame):
 
 
 class SimpleGroupsWindow(tk.Toplevel):
-    def __init__(self, master: tk.Misc, groups: List[List[str]], seed: int, class_name: str = "-", mode_label: str = ""):
+    def __init__(self, master: tk.Misc, groups: List[List[str]], seed: int, class_name: str = "-"):
         super().__init__(master)
         self.title("Einfachgruppen")
         self.groups = groups
         self.seed = seed
         self.class_name = class_name or "-"
-        self.mode_label = mode_label
         self.configure(bg=LIGHT_BACKGROUND)
         self.geometry("960x640")
         self.minsize(780, 520)
@@ -646,7 +610,7 @@ class SimpleGroupsWindow(tk.Toplevel):
         ).pack(side=tk.LEFT, padx=20, pady=12)
         tk.Label(
             self.header_bar,
-            text=f"Klasse: {self.class_name}    |    {self.mode_label or f'Gruppen: {len(groups)}'}    |    Seed: {self.seed:06d}",
+            text=f"Klasse: {self.class_name}    |    Gruppen: {len(groups)}    |    Seed: {self.seed:06d}",
             font=self.font_meta,
             fg=HEADER_TEXT_COLOR,
             bg="#3949AB",
@@ -683,8 +647,12 @@ class SimpleGroupsWindow(tk.Toplevel):
             return
 
         group_count = len(self.groups)
-        columns = max(1, math.ceil(math.sqrt(group_count)))
-        columns = min(columns, 4)
+        if group_count <= 3:
+            columns = 1
+        elif group_count <= 6:
+            columns = 2
+        else:
+            columns = 3
 
         for idx in range(columns):
             self.groups_frame.columnconfigure(idx, weight=1)
@@ -815,45 +783,28 @@ class SimpleGroupsWindow(tk.Toplevel):
         if width <= 1 or height <= 1:
             return
         available_width = max(150, width - 32)
-        available_height = max(120, height - 38)
+        available_height = max(120, height - 32)
         member_labels: List[tk.Label] = info.get("member_labels", [])
         hint_labels: List[tk.Label] = info.get("hint_labels", [])
-        labels = member_labels if member_labels else hint_labels
-        line_count = len(labels)
+        line_count = len(member_labels) if member_labels else len(hint_labels)
         line_count = max(1, line_count)
-        base_size = int((available_height / (line_count + 1.2)) * 0.92)
-        base_size = max(18, min(base_size, 56))
-        min_size = 14
-        size = max(min_size, base_size)
-        title_text = info["title_label"].cget("text")
-        while size >= min_size:
+        base_size = int((available_height / (line_count + 0.7)) * 0.9)
+        base_size = max(18, min(base_size, 54))
+        texts = [lbl.cget("text") for lbl in member_labels]
+        if not texts:
+            texts = [lbl.cget("text") for lbl in hint_labels]
+        longest = max(texts, key=lambda t: len(t), default="")
+        size = base_size
+        while size > 16:
             info["member_font"].configure(size=size)
-            measured_lines = 0
-            for lbl in labels:
-                text = lbl.cget("text") or ""
-                text_width = info["member_font"].measure(text)
-                if available_width <= 0:
-                    line_wrap = 1
-                else:
-                    line_wrap = max(1, math.ceil(text_width / max(1, available_width)))
-                measured_lines += line_wrap
-            if not labels:
-                measured_lines = 1
-            line_height = info["member_font"].metrics("linespace") or (size + 6)
-            total_height = measured_lines * (line_height + 4)
-            title_size_candidate = max(size + 3, int(size * 1.16))
-            info["title_font"].configure(size=title_size_candidate)
-            title_height = info["title_font"].metrics("linespace") or (title_size_candidate + 8)
-            total_height += title_height + 42
-            title_width = info["title_font"].measure(title_text)
-            if total_height <= available_height and (title_width <= available_width or title_size_candidate <= 18):
+            if not longest or info["member_font"].measure(longest) <= available_width:
                 break
             size -= 1
-        size = max(min_size, size)
-        info["member_font"].configure(size=size)
+        info["member_font"].configure(size=max(16, size))
         info["hint_font"].configure(size=max(16, min(size, 42)))
         title_size = max(size + 3, int(size * 1.16))
-        while title_size > 18 and info["title_font"].measure(title_text) > available_width:
+        title_text = info["title_label"].cget("text")
+        while title_size > size and info["title_font"].measure(title_text) > available_width and title_size > 18:
             title_size -= 1
         info["title_font"].configure(size=max(18, title_size))
         wrap = available_width
@@ -1046,43 +997,25 @@ class PhaseFrame(ttk.Frame):
         available_height = max(80, height - 24)
         member_labels: List[tk.Label] = info.get("member_labels", [])
         hint_labels: List[tk.Label] = info.get("hint_labels", [])
-        labels = member_labels if member_labels else hint_labels
-        line_count = len(labels)
+        line_count = len(member_labels) if member_labels else len(hint_labels)
         line_count = max(1, line_count)
-        base_size = int((available_height / (line_count + 1.0)) * 0.9)
-        base_size = max(15, min(base_size, 42))
-        min_size = 13
-        size = max(min_size, base_size)
-        title_text = info["title_label"].cget("text")
-        while size >= min_size:
-            label_font = info["item_font"] if member_labels else info["hint_font"]
-            label_font.configure(size=size)
-            measured_lines = 0
-            for lbl in labels:
-                text = lbl.cget("text") or ""
-                text_width = label_font.measure(text)
-                if available_width <= 0:
-                    line_wrap = 1
-                else:
-                    line_wrap = max(1, math.ceil(text_width / max(1, available_width)))
-                measured_lines += line_wrap
-            if not labels:
-                measured_lines = 1
-            line_height = label_font.metrics("linespace") or (size + 6)
-            total_height = measured_lines * line_height
-            title_size_candidate = max(size + 2, int(size * 1.15))
-            info["title_font"].configure(size=title_size_candidate)
-            title_height = info["title_font"].metrics("linespace") or (title_size_candidate + 8)
-            total_height += title_height + 32
-            title_width = info["title_font"].measure(title_text)
-            if total_height <= available_height and (title_width <= available_width or title_size_candidate <= 18):
+        base_size = int((available_height / (line_count + 0.6)) * 0.9)
+        base_size = max(16, min(base_size, 40))
+        texts = [lbl.cget("text") for lbl in member_labels]
+        if not texts:
+            texts = [lbl.cget("text") for lbl in hint_labels]
+        longest = max(texts, key=lambda t: len(t), default="")
+        size = base_size
+        while size > 14:
+            info["item_font"].configure(size=size)
+            if not longest or info["item_font"].measure(longest) <= available_width:
                 break
             size -= 1
-        size = max(min_size, size)
-        info["item_font"].configure(size=size)
+        info["item_font"].configure(size=max(14, size))
         info["hint_font"].configure(size=max(14, min(size, 30)))
         title_size = max(size + 2, int(size * 1.15))
-        while title_size > 18 and info["title_font"].measure(title_text) > available_width:
+        title_text = info["title_label"].cget("text")
+        while title_size > size and info["title_font"].measure(title_text) > available_width and title_size > 18:
             title_size -= 1
         info["title_font"].configure(size=max(18, title_size))
         wrap = available_width
@@ -1700,3 +1633,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
